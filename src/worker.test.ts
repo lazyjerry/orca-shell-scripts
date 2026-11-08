@@ -5,14 +5,6 @@ import { assert, mockHost, mountWorker, test } from 'orca/testing';
 import * as main from './worker.ts';
 import type { ViewState } from './protocol.ts';
 
-const WORKSPACES = {
-  workspaces: [
-    { id: 'ws-1', kind: 'worktree', name: 'api', path: '/repo/api', branch: 'main', hostId: null },
-    { id: 'ws-2', kind: 'folder', name: 'notes', path: '/notes', branch: null, hostId: null },
-  ],
-  truncated: false,
-};
-
 function fixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shell-scripts-test-'));
   const shared = path.join(dir, 'shared');
@@ -23,15 +15,7 @@ function fixture() {
 }
 
 async function mount(settings: Record<string, string>) {
-  const host = mockHost({
-    settings,
-    results: {
-      'workspace.list': WORKSPACES,
-      'workspace.readContext': { branch: 'main', displayName: 'api', terminals: [] },
-      'terminal.create': { terminalId: 'term-1' },
-      'terminal.sendText': { accepted: true },
-    },
-  });
+  const host = mockHost({ settings });
   return { host, worker: await mountWorker(main, { host }) };
 }
 
@@ -60,35 +44,13 @@ test('驗證失敗的 script 標出原因，執行被擋下且不開終端機', 
   const f = fixture();
   const notBash = path.join(f.dir, 'tool.py');
   fs.writeFileSync(notBash, '#!/usr/bin/env python3\n');
-  const { worker, host } = await mount({ dataFolder: f.shared, privateDataFolder: f.priv });
+  const { worker } = await mount({ dataFolder: f.shared, privateDataFolder: f.priv });
   const { state } = await worker.request('script.add', { source: 'shared', path: notBash });
   const id = scriptsOf(state, 'shared')[0].id;
   assert.match(state.sources[0].invalid[id], /不是 bash 檔/);
   const run = await worker.request('script.run', { source: 'shared', id });
   assert.equal(run.flash?.tone, 'danger');
-  assert.equal(host.callsOf('terminal.create').length, 0);
-  await worker.deactivate();
-});
-
-test('執行時對出聚焦的 workspace 開終端機，第二次沿用同一個終端機', async () => {
-  const f = fixture();
-  const { worker, host } = await mount({ dataFolder: f.shared, privateDataFolder: f.priv });
-  const { state } = await worker.request('script.add', { source: 'shared', path: f.script });
-  assert.equal(state.focusedWorkspaceId, 'ws-1');
-  const id = scriptsOf(state, 'shared')[0].id;
-
-  await worker.request('script.run', { source: 'shared', id });
-  const params = host.callsOf('terminal.create')[0] as { workspaceId: string; command: string };
-  assert.equal(params.workspaceId, 'ws-1');
-  if (os.userInfo().shell?.endsWith('zsh') || os.userInfo().shell?.endsWith('bash')) {
-    // 檔名裡的單引號必須被跳脫，否則會切斷引號變成指令注入
-    assert.ok(params.command.endsWith(`bash '${path.join(f.dir, "it'\\''s here.sh")}'`), params.command);
-  }
-
-  const again = await worker.request('script.run', { source: 'shared', id });
-  assert.match(again.flash?.text ?? '', /原終端機/);
-  assert.equal(host.callsOf('terminal.create').length, 1);
-  assert.equal((host.callsOf('terminal.sendText')[0] as { terminalId: string }).terminalId, 'term-1');
+  assert.match(run.flash?.text ?? '', /無法執行/);
   await worker.deactivate();
 });
 
@@ -125,5 +87,22 @@ test('外部寫入的 scripts.json 在下次讀取時就生效', async () => {
   );
   const state = await worker.request('state.get');
   assert.equal(scriptsOf(state, 'shared')[0].kind, 'folder');
+  await worker.deactivate();
+});
+
+test('建立至快速命令：回傳要貼的標籤與 cd + bash 命令；驗證失敗的 script 擋下', async () => {
+  const f = fixture();
+  const { worker } = await mount({ dataFolder: f.shared, privateDataFolder: f.priv });
+  const { state } = await worker.request('script.add', { source: 'shared', path: f.script });
+  const id = scriptsOf(state, 'shared')[0].id;
+  const result = await worker.request('quickCommand.prepare', { source: 'shared', id });
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), result);
+  assert.equal(result.guide?.label, "it's here.sh");
+  assert.equal(result.guide?.command, `cd '${f.dir}' && bash '${f.dir}/it'\\''s here.sh'`);
+
+  fs.rmSync(f.script);
+  const blocked = await worker.request('quickCommand.prepare', { source: 'shared', id });
+  assert.equal(blocked.guide, undefined);
+  assert.equal(blocked.flash?.tone, 'danger');
   await worker.deactivate();
 });

@@ -3,7 +3,7 @@
   "id": "shell-scripts",
   "name": "Shell Scripts",
   "version": "0.1.0",
-  "description": "在側欄管理 bash script 清單（資料夾分組、備註、驗證、排序），一鍵在 Orca 終端機互動執行。",
+  "description": "在側欄管理 bash script 清單（資料夾分組、備註、驗證、排序），一鍵在系統預設終端機互動執行。",
   "license": "Apache-2.0",
   "icon": "assets/icon.png",
   "engines": {
@@ -42,9 +42,6 @@
     ]
   },
   "capabilities": [
-    { "kind": "settings:own" },
-    { "kind": "storage:own" },
-    { "kind": "workspace:read" },
-    { "kind": "terminal:send" }
+    { "kind": "settings:own" }
   ]
 }

@@ -16,17 +16,8 @@ export interface SourceView {
   error?: string;
 }
 
-export interface WorkspaceOption {
-  id: string;
-  name: string;
-  branch: string | null;
-}
-
 export interface ViewState {
   sources: SourceView[];
-  workspaces: WorkspaceOption[];
-  /** 由目前聚焦的 workspace 對出來的 id；對不到為 null */
-  focusedWorkspaceId: string | null;
   notices: string[];
 }
 
@@ -42,6 +33,13 @@ export interface ActionResult {
 
 type Target = { source: ScriptSource; id: string };
 
+/** 「建立至快速命令中」的操作步驟要貼的內容；checked = 是否成功比對過現有快速命令。 */
+export interface QuickCommandGuide {
+  label: string;
+  command: string;
+  checked: boolean;
+}
+
 declare module 'orca' {
   interface PluginRequests {
     'state.get': { output: ViewState };
@@ -53,8 +51,11 @@ declare module 'orca' {
     'node.shift': { input: Target & { delta: -1 | 1 }; output: ActionResult };
     /** toFolderId 為 null = 移到該清單最上層 */
     'node.move': { input: Target & { toSource: ScriptSource; toFolderId: string | null }; output: ActionResult };
-    'script.run': { input: Target & { workspaceId?: string }; output: ActionResult };
+    'script.run': { input: Target; output: ActionResult };
     'dataFolder.set': { input: { source: ScriptSource; folder: string }; output: ActionResult };
     'dataFolder.reveal': { input: { source: ScriptSource }; output: ActionResult };
+    /** 已有相同 bash 的快速命令時不給 guide，改回 danger flash */
+    'quickCommand.prepare': { input: Target; output: ActionResult & { guide?: QuickCommandGuide } };
+    'clipboard.copy': { input: { text: string; what: string }; output: { flash: Flash } };
   }
 }

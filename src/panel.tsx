@@ -7,7 +7,6 @@ import {
   EmptyState,
   Input,
   KeyValue,
-  on,
   plugin,
   read,
   Row,
@@ -21,19 +20,21 @@ import {
   Box,
   List,
   ListItem,
+  CodeView,
+  Separator,
   type IconName,
   type OrcaNode,
-  type PanelContext,
 } from 'orca';
 import type { ActionResult, Flash, FolderNode, ScriptNode, ScriptSource, SourceView, TreeNode, ViewState } from './protocol.ts';
+import type { QuickCommandGuide } from './protocol.ts';
 
 const SOURCE_LABELS: Record<ScriptSource, string> = { shared: '共用', private: '私有' };
-const AUTO_WORKSPACE = 'auto';
 
 type Form =
   | { kind: 'addScript' | 'addFolder'; source: ScriptSource; parentId?: string }
   | { kind: 'editNote' | 'editPath' | 'rename' | 'delete'; source: ScriptSource; id: string }
-  | { kind: 'dataFolder'; source: ScriptSource };
+  | { kind: 'dataFolder'; source: ScriptSource }
+  | { kind: 'quickCommand'; source: ScriptSource; id: string; guide: QuickCommandGuide };
 
 type Selection =
   | { type: 'source'; source: ScriptSource }
@@ -47,16 +48,37 @@ const draft = atom('');
 const formSource = atom<ScriptSource>('shared');
 const selected = atom('selected', '', { persist: 'plugin' });
 const expanded = atom<string[]>('expanded', ['src:shared', 'src:private'], { persist: 'plugin' });
-const workspaceChoice = atom('workspace', AUTO_WORKSPACE, { persist: 'workspace' });
 
 const sourceKey = (source: ScriptSource) => `src:${source}`;
 const nodeKey = (source: ScriptSource, id: string) => `${source}:${id}`;
+
+const FLASH_TIMEOUT_MS = 4000;
+
+/** 底部狀態列的訊息：成功／一般訊息幾秒後自動消失，警告與錯誤留著等使用者關閉。 */
+function showFlash(next: Flash | null): void {
+  set(flash, next);
+  if (next && (next.tone === 'success' || next.tone === 'neutral')) {
+    setTimeout(() => {
+      if (read(flash) === next) {
+        set(flash, null);
+      }
+    }, FLASH_TIMEOUT_MS);
+  }
+}
+
+/** 表單跟著動作區顯示，換選取項目時關掉，避免表單掛在別的項目下面。 */
+function select(key: string): void {
+  if (read(selected) !== key) {
+    set(form, null);
+  }
+  set(selected, key);
+}
 
 async function refresh(): Promise<void> {
   try {
     set(view, await plugin.request('state.get'));
   } catch (err) {
-    set(flash, { tone: 'danger', text: `讀取清單失敗：${errorText(err)}` });
+    showFlash({ tone: 'danger', text: `讀取清單失敗：${errorText(err)}` });
   }
 }
 
@@ -66,20 +88,18 @@ async function act(run: () => Promise<ActionResult>, closeForm = true): Promise<
   try {
     const result = await run();
     set(view, result.state);
-    set(flash, result.flash ?? null);
+    showFlash(result.flash ?? null);
     if (closeForm && result.flash?.tone !== 'danger') {
       set(form, null);
     }
   } catch (err) {
-    set(flash, { tone: 'danger', text: errorText(err) });
+    showFlash({ tone: 'danger', text: errorText(err) });
   } finally {
     set(busy, false);
   }
 }
 
-export function setup(ctx: PanelContext): void {
-  // 聚焦的 workspace 變了就重抓：自動選取的執行目標跟著換，也順便載入別處寫入的清單
-  ctx.subscriptions.push(on('workspace.changed', () => void refresh()));
+export function setup(): void {
   void refresh();
 }
 
@@ -137,7 +157,7 @@ function addTarget(sel: Selection | null): { source: ScriptSource; parentId?: st
 function pressBranch(key: string): void {
   const open = read(expanded);
   if (read(selected) !== key) {
-    set(selected, key);
+    select(key);
     if (!open.includes(key)) {
       set(expanded, [...open, key]);
     }
@@ -188,7 +208,7 @@ function nodeEntries(src: SourceView, nodes: TreeNode[]): OrcaNode[] {
     }
     const problem = src.invalid[node.id];
     const description = [node.note, problem && `⚠ ${problem}`].filter(Boolean).join(' · ');
-    return entry(key, { title: node.label, icon: problem ? 'warning' : 'terminal', description }, () => set(selected, key));
+    return entry(key, { title: node.label, icon: problem ? 'warning' : 'terminal', description }, () => select(key));
   });
 }
 
@@ -231,10 +251,62 @@ function moveOptions(state: ViewState, moving: TreeNode): { value: string; label
 }
 
 function runScript(source: ScriptSource, script: ScriptNode): Promise<void> {
-  const choice = read(workspaceChoice);
-  // plugin.request 只收 JSON：undefined 欄位會被當成 invalid_params，選填欄位要整個省略
-  const input = choice === AUTO_WORKSPACE ? { source, id: script.id } : { source, id: script.id, workspaceId: choice };
-  return act(() => plugin.request('script.run', input), false);
+  return act(() => plugin.request('script.run', { source, id: script.id }), false);
+}
+
+/** worker 擋下重複時只回 danger 提示；通過才打開操作步驟。 */
+function prepareQuickCommand(source: ScriptSource, script: ScriptNode): Promise<void> {
+  return act(async () => {
+    const result = await plugin.request('quickCommand.prepare', { source, id: script.id });
+    if (result.guide) {
+      set(form, { kind: 'quickCommand', source, id: script.id, guide: result.guide });
+    }
+    return result;
+  }, false);
+}
+
+async function copyText(text: string, what: string): Promise<void> {
+  try {
+    showFlash((await plugin.request('clipboard.copy', { text, what })).flash);
+  } catch (err) {
+    showFlash({ tone: 'danger', text: errorText(err) });
+  }
+}
+
+/** Orca 沒有開放外掛寫入快速命令，改成列出步驟與要貼的文字，由使用者手動新增。 */
+function QuickCommandGuideCard({ name, guide, onClose }: { name: string; guide: QuickCommandGuide; onClose: () => void }) {
+  return (
+    <Card title={`建立至快速命令：${name}`}>
+      <Stack gap="sm">
+        {guide.checked ? null : (
+          <Callout tone="warning">讀不到 Orca 現有的快速命令，無法檢查是否重複，新增前請先確認清單。</Callout>
+        )}
+        <Text size="sm">Orca 沒有開放外掛直接寫入快速命令，請照以下步驟手動新增：</Text>
+        <Text size="sm">1. 在 Orca 終端機上按右鍵，選「快速命令」→「新增快速命令…」。</Text>
+        <Text size="sm">2. 「標籤」貼上：</Text>
+        <Input label="標籤" labelHidden value={guide.label} />
+        <Row justify="end">
+          <Button size="sm" variant="outline" icon="copy" onPress={() => copyText(guide.label, '標籤')}>
+            複製標籤
+          </Button>
+        </Row>
+        <Text size="sm">3. 「操作」選「終端機」，「命令」貼上：</Text>
+        <CodeView code={guide.command} language="bash" label="命令" wrap />
+        <Row justify="end">
+          <Button size="sm" variant="outline" icon="copy" onPress={() => copyText(guide.command, '命令')}>
+            複製命令
+          </Button>
+        </Row>
+        <Text size="sm">4. 保持「追加 Enter — 立即執行」開啟；要讓所有專案都看得到，展開「進階」把範圍改成「全域」。</Text>
+        <Text size="sm">5. 按「儲存」。之後再按「建立至快速命令中」，會擋下同一支 script 的重複建立。</Text>
+        <Row gap="xs">
+          <Button variant="ghost" onPress={onClose}>
+            關閉
+          </Button>
+        </Row>
+      </Stack>
+    </Card>
+  );
 }
 
 function FormArea({ state }: { state: ViewState }) {
@@ -271,6 +343,10 @@ function FormArea({ state }: { state: ViewState }) {
         </Stack>
       </Callout>
     );
+  }
+
+  if (current.kind === 'quickCommand') {
+    return <QuickCommandGuideCard name={name} guide={current.guide} onClose={cancel} />;
   }
 
   const spec = {
@@ -397,10 +473,14 @@ function Details({ state, sel }: { state: ViewState; sel: Selection }) {
       <Select label="移到" labelHidden value="" placeholder="移到…" options={moveOptions(state, node)} disabled={disabled} onChange={move} />
     </>
   );
-  const remove = (
-    <Button size="sm" tone="danger" variant="ghost" icon="delete" onPress={() => openForm({ kind: 'delete', ...target })}>
-      刪除
-    </Button>
+  // 刪除單獨一行靠右，跟執行等常用動作拉開距離，避免誤按；script 在刪除左邊多一顆「建立至快速命令中」
+  const remove = (before?: OrcaNode) => (
+    <Row justify="end" gap="xs">
+      {before}
+      <Button size="sm" tone="danger" variant="ghost" icon="delete" onPress={() => openForm({ kind: 'delete', ...target })}>
+        刪除
+      </Button>
+    </Row>
   );
 
   if (node.kind === 'folder') {
@@ -422,8 +502,8 @@ function Details({ state, sel }: { state: ViewState; sel: Selection }) {
             <Button size="sm" variant="outline" icon="edit" onPress={() => openForm({ kind: 'rename', ...target }, folder.name)}>
               改名
             </Button>
-            {remove}
           </Row>
+          {remove()}
         </Stack>
       </Card>
     );
@@ -455,8 +535,15 @@ function Details({ state, sel }: { state: ViewState; sel: Selection }) {
           <Button size="sm" variant="outline" icon="file" onPress={() => openForm({ kind: 'editPath', ...target }, script.path)}>
             編輯路徑
           </Button>
-          {remove}
         </Row>
+        {remove(
+          // Orca 外掛沒有藍色 tone：accent 是主題的 primary 色，與執行鈕同樣用外框 Box 上色
+          <Box border="accent" background="accent" radius="md">
+            <Button size="sm" variant="ghost" icon="add" disabled={disabled} onPress={() => prepareQuickCommand(source, script)}>
+              建立至快速命令中
+            </Button>
+          </Box>,
+        )}
       </Stack>
     </Card>
   );
@@ -497,47 +584,48 @@ export default function Panel() {
     );
     return branch(key, row, () => nodeEntries(src, src.roots));
   });
-  const workspaceOptions = [
-    {
-      value: AUTO_WORKSPACE,
-      label: `目前的 workspace（${state.workspaces.find((w) => w.id === state.focusedWorkspaceId)?.name ?? '無法辨識'}）`,
-    },
-    ...state.workspaces.map((w) => ({ value: w.id, label: w.branch ? `${w.name}（${w.branch}）` : w.name })),
-  ];
 
+  // 版面分三段：上方工具列、中間可捲動的內容（表單跟在動作區下面）、底部狀態列（操作結果訊息）。
+  // 面板高度不固定時 100% 會退回內容高度，三段照順序排下來，狀態列仍在最後面。
   return (
-    <Stack gap="md">
+    <Box height="100%" gap="sm">
       <Toolbar label="Shell Scripts">
         <IconButton icon="add" label="新增 Script" tooltip="新增 Script" disabled={disabled} onPress={() => openForm({ kind: 'addScript', ...target })} />
         <IconButton icon="folder" label="新增資料夾" tooltip="新增資料夾" disabled={disabled} onPress={() => openForm({ kind: 'addFolder', ...target })} />
         <IconButton icon="refresh" label="刷新並驗證" tooltip="刷新並驗證" disabled={disabled} onPress={refresh} />
       </Toolbar>
-      <Select label="執行於" value={read(workspaceChoice)} options={workspaceOptions} onChange={(v) => set(workspaceChoice, v)} />
+      <Box grow minHeight={0} scroll="y">
+        <Stack gap="md">
+          {state.notices.map((notice) => (
+            <Callout tone="warning">{notice}</Callout>
+          ))}
+          {state.sources
+            .filter((s) => s.conflicts.length > 0)
+            .map((s) => (
+              <Callout tone="warning" title={`${SOURCE_LABELS[s.source]}清單有同步衝突副本`}>
+                <Text size="sm">請手動整併後刪除：{s.conflicts.join('、')}</Text>
+              </Callout>
+            ))}
+          <Box gap="none">{entries}</Box>
+          {empty ? (
+            <EmptyState icon="terminal" title="尚未登錄任何 script" description="用上方的「新增 Script」登錄 bash script，選取後按「執行」在終端機執行。" />
+          ) : null}
+          {sel ? <Details state={state} sel={sel} /> : null}
+          <FormArea state={state} />
+        </Stack>
+      </Box>
       {message ? (
-        <Callout tone={message.tone}>
-          <Row justify="between" align="center">
-            <Text size="sm">{message.text}</Text>
-            <IconButton icon="close" label="關閉訊息" size="xs" variant="ghost" onPress={() => set(flash, null)} />
-          </Row>
-        </Callout>
-      ) : null}
-      {state.notices.map((notice) => (
-        <Callout tone="warning">{notice}</Callout>
-      ))}
-      {state.sources
-        .filter((s) => s.conflicts.length > 0)
-        .map((s) => (
-          <Callout tone="warning" title={`${SOURCE_LABELS[s.source]}清單有同步衝突副本`}>
-            <Text size="sm">請手動整併後刪除：{s.conflicts.join('、')}</Text>
+        <Box gap="sm" shrink={false}>
+          <Separator />
+          <Callout tone={message.tone}>
+            <Row justify="between" align="center">
+              <Text size="sm">{message.text}</Text>
+              <IconButton icon="close" label="關閉訊息" size="xs" variant="ghost" onPress={() => set(flash, null)} />
+            </Row>
           </Callout>
-        ))}
-      <FormArea state={state} />
-      <Box gap="none">{entries}</Box>
-      {empty ? (
-        <EmptyState icon="terminal" title="尚未登錄任何 script" description="用上方的「新增 Script」登錄 bash script，選取後按「執行」在終端機執行。" />
+        </Box>
       ) : null}
-      {sel ? <Details state={state} sel={sel} /> : null}
-    </Stack>
+    </Box>
   );
 }
 

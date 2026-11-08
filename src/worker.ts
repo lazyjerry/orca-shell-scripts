@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import type { OrcaWorkerApi } from 'orca/worker';
-import type { ActionResult, Flash, SourceView, ViewState, WorkspaceOption } from './protocol.ts';
+import type { ActionResult, Flash, SourceView, ViewState } from './protocol.ts';
 import type { FolderNode, ScriptNode, ScriptSource, ScriptTreeState } from './core/types.ts';
 import {
   addNode,
@@ -31,6 +31,8 @@ import {
   writeState,
 } from './worker/store.ts';
 import { runScript } from './worker/runner.ts';
+import { copyToClipboard, findDuplicate, locateProfileDb, quickCommandText, readQuickCommands } from './worker/quickCommands.ts';
+import type { QuickCommandGuide } from './protocol.ts';
 
 const SOURCES: ScriptSource[] = ['shared', 'private'];
 const SOURCE_LABELS: Record<ScriptSource, string> = { shared: '共用', private: '私有' };
@@ -64,25 +66,6 @@ export default function activate(orca: OrcaWorkerApi): void {
     }
     writeState(layout, state);
     return true;
-  }
-
-  async function workspaceInfo(): Promise<{ workspaces: WorkspaceOption[]; focusedWorkspaceId: string | null }> {
-    try {
-      const [{ workspaces }, context] = await Promise.all([
-        orca.host.call('workspace.list', {}),
-        orca.host.call('workspace.readContext', {}),
-      ]);
-      // readContext 不給 id，只能用名稱 + branch 對回 workspace.list；對到不只一個就不猜
-      const matches = context
-        ? workspaces.filter((w) => w.name === context.displayName && (w.branch ?? '') === context.branch)
-        : [];
-      return {
-        workspaces: workspaces.map((w) => ({ id: w.id, name: w.name, branch: w.branch })),
-        focusedWorkspaceId: matches.length === 1 ? matches[0].id : null,
-      };
-    } catch {
-      return { workspaces: [], focusedWorkspaceId: null };
-    }
   }
 
   async function viewState(): Promise<ViewState> {
@@ -124,7 +107,7 @@ export default function activate(orca: OrcaWorkerApi): void {
       }
       sources.push(view);
     }
-    return { sources, notices, ...(await workspaceInfo()) };
+    return { sources, notices };
   }
 
   /** 每個動作都回傳最新畫面狀態；UserError 轉成提示，其他錯誤照常拋給 panel。 */
@@ -253,7 +236,7 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   orca.panels.handle(
     'script.run',
-    action(async ({ source, id, workspaceId }) => {
+    action(async ({ source, id }) => {
       const layout = await usableLayout(source);
       const node = findNode(readState(layout).state, id);
       if (!node || node.kind !== 'script') {
@@ -264,17 +247,13 @@ export default function activate(orca: OrcaWorkerApi): void {
       if (message) {
         throw new UserError(`無法執行「${node.label}」：${message}（${node.path}）`);
       }
-      const targetId = workspaceId || (await workspaceInfo()).focusedWorkspaceId;
-      if (!targetId) {
-        throw new UserError('認不出目前的 workspace，請在上方「執行於」選一個');
-      }
-      const outcome = await runScript(orca, node, targetId);
+      const outcome = await runScript(node);
       if (!outcome.ok) {
         throw new UserError(`無法執行「${node.label}」：${outcome.reason}`);
       }
       return {
         tone: 'success',
-        text: outcome.reused ? `已在原終端機重新執行「${node.label}」` : `已開新終端機執行「${node.label}」`,
+        text: `已在預設終端機開啟「${node.label}」`,
       };
     }),
   );
@@ -301,7 +280,52 @@ export default function activate(orca: OrcaWorkerApi): void {
       return undefined;
     }),
   );
+
+  // plugin API 不能寫入 Orca 快速命令，這裡只組好要貼的文字並擋下重複，實際新增由使用者照步驟操作
+  orca.panels.handle('quickCommand.prepare', async (input) => {
+    let guide: QuickCommandGuide | undefined;
+    const result = await action<typeof input>(async ({ source, id }) => {
+      const layout = await usableLayout(source);
+      const node = findNode(readState(layout).state, id);
+      if (!node || node.kind !== 'script') {
+        throw new UserError('找不到這個 script，清單可能已在別處被修改');
+      }
+      const message = validationMessage(await validateScriptFile(expandHome(node.path)));
+      if (message) {
+        throw new UserError(`無法建立「${node.label}」的快速命令：${message}（${node.path}）`);
+      }
+      const absolutePath = expandHome(node.path);
+      if (hasControlChars(absolutePath)) {
+        throw new UserError('路徑含控制字元，無法安全帶入');
+      }
+      const command = quickCommandText(absolutePath);
+      if (command.length > MAX_QUICK_COMMAND_LENGTH) {
+        throw new UserError(`命令超過 Orca 快速命令的 ${MAX_QUICK_COMMAND_LENGTH} 字上限`);
+      }
+      const existing = await readQuickCommands(await locateProfileDb());
+      const duplicate = existing && findDuplicate(existing, absolutePath);
+      if (duplicate) {
+        throw new UserError(`快速命令已有「${duplicate.label || '未命名'}」執行同一支 script，不重複建立`);
+      }
+      guide = { label: node.label.slice(0, MAX_QUICK_COMMAND_LABEL_LENGTH), command, checked: existing !== null };
+      return undefined;
+    })(input);
+    return guide ? { ...result, guide } : result;
+  });
+
+  orca.panels.handle('clipboard.copy', async ({ text, what }): Promise<{ flash: Flash }> => {
+    try {
+      await copyToClipboard(text);
+      return { flash: { tone: 'success', text: `已複製${what}` } };
+    } catch (err) {
+      return { flash: { tone: 'danger', text: `無法複製${what}：${errorText(err)}` } };
+    }
+  });
 }
+
+/** Orca 快速命令的欄位上限（標籤 80 字、命令 4000 字），超過會被 Orca 截斷 */
+const MAX_QUICK_COMMAND_LABEL_LENGTH = 80;
+const MAX_QUICK_COMMAND_LENGTH = 4000;
 
 /** 只接受絕對路徑或 ~ 開頭；家目錄下一律收斂為 ~ 形式，方便多機同步。 */
 function normalizeScriptPath(raw: string): string {
