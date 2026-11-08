@@ -1,0 +1,22 @@
+node_modules/
+.orca/
+
+# macOS
+.DS_Store
+
+# 編輯器
+.vscode/
+.idea/
+
+# 日誌
+*.log
+npm-debug.log*
+
+# 環境變數
+.env
+.env.*
+
+# 建置與測試產物
+dist/
+coverage/
+*.tgz
