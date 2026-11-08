@@ -1,0 +1,50 @@
+{
+  "manifestVersion": 2,
+  "id": "shell-scripts",
+  "name": "Shell Scripts",
+  "version": "0.1.0",
+  "description": "在側欄管理 bash script 清單（資料夾分組、備註、驗證、排序），一鍵在 Orca 終端機互動執行。",
+  "license": "Apache-2.0",
+  "icon": "assets/icon.png",
+  "engines": {
+    "orca": ">=1.4.248"
+  },
+  "execution": "trusted-worker",
+  "pluginApi": 1,
+  "main": "src/worker.ts",
+  "contributes": {
+    "panels": [
+      {
+        "id": "scripts",
+        "title": "Shell Scripts",
+        "icon": "terminal",
+        "entry": "src/panel.tsx",
+        "ui": "components"
+      }
+    ],
+    "settings": [
+      {
+        "key": "dataFolder",
+        "title": "共用清單保存資料夾",
+        "description": "存放 scripts.json 的資料夾，建議指向 Dropbox 等雲端同步資料夾以跨裝置共用；可與 VS Code 版 Shell Scripts 指向同一個資料夾。留空使用 ~/.orca-shell-scripts。支援 ~/ 開頭。",
+        "type": "string",
+        "default": "",
+        "placeholder": "~/Dropbox/shell-scripts"
+      },
+      {
+        "key": "privateDataFolder",
+        "title": "私有清單保存資料夾",
+        "description": "與共用清單完全隔離的第二份清單（適合不同步的個人 script）。留空使用 ~/.orca-shell-scripts/private。不可與共用資料夾相同。",
+        "type": "string",
+        "default": "",
+        "placeholder": "~/shell-scripts-private"
+      }
+    ]
+  },
+  "capabilities": [
+    { "kind": "settings:own" },
+    { "kind": "storage:own" },
+    { "kind": "workspace:read" },
+    { "kind": "terminal:send" }
+  ]
+}
