@@ -2,6 +2,15 @@
 
 在 Orca 右側欄管理 bash script 清單，選取後在系統預設終端機互動執行。移植自 VS Code 延伸模組 [Shell Scripts](https://github.com/lazyjerry/shell-script-ext)（`workjerry.shell-script`）。
 
+## 定位
+
+這個外掛用來讓 VS Code 版與 Orca 共用同一份 script 清單，或在兩者之間過渡：
+
+- **共用**：兩邊的 `scripts.json` 格式相同，保存資料夾指向同一處（例如 Dropbox），在任一邊新增、整理的 script，另一邊下次操作就看得到。
+- **過渡**：從 VS Code 轉到 Orca 時，原本的清單不必搬移或重建，直接沿用。
+
+只在 Orca 裡用、而且 script 不多時，Orca 內建的「快速命令」可能就夠用了。需要時，可以用「建立至快速命令中」把個別 script 轉成快速命令。
+
 ## 功能
 
 - **共用／私有雙清單**：各自保存一份 `scripts.json`，格式與 VS Code 版相同，兩邊可以指向同一個 Dropbox 資料夾共用。
