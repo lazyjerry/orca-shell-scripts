@@ -3,7 +3,6 @@ import {
   atom,
   Button,
   Callout,
-  Card,
   EmptyState,
   Input,
   KeyValue,
@@ -228,6 +227,16 @@ function CardHeader({ title, children }: { title: string; children?: OrcaNode })
   );
 }
 
+/** 卡片外框（與 forrrk 一致）：Card 沒有邊線參數、在側邊欄裡邊線太淡，改用 Box 畫 accent 色邊線。 */
+function Section({ title, children }: { title?: string; children?: OrcaNode }) {
+  return (
+    <Box border="accent" radius="lg" padding="md" background="card" gap="sm">
+      {title ? <Text weight="semibold">{title}</Text> : null}
+      {children}
+    </Box>
+  );
+}
+
 /** 「移到…」的選項：兩份清單的最上層與所有資料夾，排除自己與自己的子孫。 */
 function moveOptions(state: ViewState, moving: TreeNode): { value: string; label: string }[] {
   const options: { value: string; label: string }[] = [];
@@ -276,7 +285,7 @@ async function copyText(text: string, what: string): Promise<void> {
 /** Orca 沒有開放外掛寫入快速命令，改成列出步驟與要貼的文字，由使用者手動新增。 */
 function QuickCommandGuideCard({ name, guide, onClose }: { name: string; guide: QuickCommandGuide; onClose: () => void }) {
   return (
-    <Card title={`建立至快速命令：${name}`}>
+    <Section title={`建立至快速命令：${name}`}>
       <Stack gap="sm">
         {guide.checked ? null : (
           <Callout tone="warning">讀不到 Orca 現有的快速命令，無法檢查是否重複，新增前請先確認清單。</Callout>
@@ -305,7 +314,7 @@ function QuickCommandGuideCard({ name, guide, onClose }: { name: string; guide: 
           </Button>
         </Row>
       </Stack>
-    </Card>
+    </Section>
   );
 }
 
@@ -387,7 +396,7 @@ function FormArea({ state }: { state: ViewState }) {
 
   const askSource = (current.kind === 'addScript' || current.kind === 'addFolder') && current.parentId === undefined;
   return (
-    <Card title={spec.title}>
+    <Section title={spec.title}>
       <Stack gap="sm">
         {askSource ? (
           <Select
@@ -416,7 +425,7 @@ function FormArea({ state }: { state: ViewState }) {
           </Button>
         </Row>
       </Stack>
-    </Card>
+    </Section>
   );
 }
 
@@ -425,7 +434,7 @@ function Details({ state, sel }: { state: ViewState; sel: Selection }) {
   if (sel.type === 'source') {
     const src = state.sources.find((s) => s.source === sel.source)!;
     return (
-      <Card title={`${SOURCE_LABELS[sel.source]}清單`}>
+      <Section title={`${SOURCE_LABELS[sel.source]}清單`}>
         <Stack gap="sm">
           <KeyValue items={[{ label: '保存位置', value: src.isFallback ? `${src.root}（預設）` : src.root }]} />
           <Row gap="xs" wrap>
@@ -454,7 +463,7 @@ function Details({ state, sel }: { state: ViewState; sel: Selection }) {
             </Button>
           </Row>
         </Stack>
-      </Card>
+      </Section>
     );
   }
 
@@ -486,7 +495,7 @@ function Details({ state, sel }: { state: ViewState; sel: Selection }) {
   if (node.kind === 'folder') {
     const folder: FolderNode = node;
     return (
-      <Card>
+      <Section>
         <Stack gap="sm">
           <CardHeader title={folder.name}>{arrange}</CardHeader>
           <Text size="sm" muted>
@@ -505,14 +514,14 @@ function Details({ state, sel }: { state: ViewState; sel: Selection }) {
           </Row>
           {remove()}
         </Stack>
-      </Card>
+      </Section>
     );
   }
 
   const script: ScriptNode = node;
   const problem = state.sources.find((s) => s.source === source)?.invalid[script.id];
   return (
-    <Card>
+    <Section>
       <Stack gap="sm">
         <CardHeader title={script.label}>{arrange}</CardHeader>
         <KeyValue
@@ -545,7 +554,7 @@ function Details({ state, sel }: { state: ViewState; sel: Selection }) {
           </Box>,
         )}
       </Stack>
-    </Card>
+    </Section>
   );
 }
 
